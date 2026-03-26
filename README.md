@@ -62,12 +62,4 @@ Re-engagement Strategy: Created a list of "At-Risk" customers to target with spe
 
 Geographic Insights: Power BI visualizations revealed which Indian metro cities have the highest concentration of high-income "Big Spenders."
 
-📂 Project Structure
 
-/SQL_Scripts/: Database setup and core logic scripts.
-
-/Python_Notebooks/: Data analysis and exploratory visualizations.
-
-/PowerBI_Dashboard/: Interactive .pbix file or dashboard exports.
-
-/Presentation/: HTML-based presentation deck for stakeholders.

@@ -1,0 +1,304 @@
+-- Phase 1: Database Setup
+
+--          Create the Database
+
+CREATE DATABASE RetailAnalytics;
+USE RetailAnalytics;
+
+
+-------------------------------------------------------------------------------------------------
+
+
+-- Phase 2: Data Import
+
+--          In MySQL Workbench, you don't need code to load the CSVs:
+
+--          Right-click your table (Customer_Master) in the Navigator.
+
+--          Select Table Data Import Wizard.
+
+--          Choose your CSV file and follow the prompts to map columns.
+
+-- Important: 
+--           Ensure your date formats in the CSV match MySQL's YYYY-MM-DD. 
+--           If they don't, import them as VARCHAR first and then use STR_TO_DATE() to convert them.
+
+-------------------------------------------------------------------------------------------------
+
+
+-- checking the data imported correctly
+
+select count(*) from customer_master;
+select count(*) from transactions;
+
+
+------------------------------------------------------------------------------------------------
+
+-- changing the date columns to DATE format
+
+SET SQL_SAFE_UPDATES=0;
+UPDATE Transactions 
+SET TransactionDate = STR_TO_DATE(TransactionDate, '%d-%m-%Y'); 
+
+-- change the column type to DATE permanently
+ALTER TABLE Transactions 
+MODIFY COLUMN TransactionDate DATE;
+
+
+UPDATE customer_master
+SET JoinDate = str_to_date(Joindate, '%d-%m-%Y') ;
+
+-- change the column type to DATE permanently
+ALTER TABLE customer_master
+MODIFY COLUMN joindate DATE;
+
+----------------------------------------------------------------------------------------------------------
+
+
+-- Phase 3: The Core RFM Calculation
+--          In Python, you would use groupby. 
+--          In SQL, we use a Common Table Expression (CTE) 
+--          to calculate the base metrics and 
+--          then assign scores using the NTILE() function.
+
+-- Step 1: Define Metrics and Scores
+--         This single query calculates the Recency, 
+--         Frequency, and Monetary values and 
+--         assigns a score from 1 to 5 for each.
+
+
+--        In this phase, 
+
+--        the query looks at the Transactions table and performs three specific 
+--        math operations for every CustomerID:
+
+--        Recency Calculation: 
+--                            It finds the MAX(TransactionDate) 
+--                            (the most recent day they shopped) and subtracts 
+--                            it from a "reference date" to see how many days 
+--                            they have been away.
+
+--        Frequency Calculation: 
+--                             It uses COUNT(TransactionDate) to total up how many
+--                             separate times that customer has made a purchase.
+--        Monetary Calculation: 
+--                             It uses SUM(TransactionAmount) to add up the 
+--                             total rupees (₹) the customer has spent
+
+
+WITH RFM_Base AS (
+    SELECT 
+        CustomerID,
+        -- Recency: Days since last purchase relative to 'today' (max date + 1)
+        DATEDIFF((SELECT MAX(TransactionDate) + INTERVAL 1 DAY FROM Transactions), MAX(TransactionDate)) AS Recency,
+        -- Frequency: Total count of transactions
+        COUNT(TransactionDate) AS Frequency,
+        -- Monetary: Total spend
+        round(sum(TransactionAmount),2) AS Monetary
+    FROM Transactions
+    GROUP BY CustomerID
+),
+RFM_Scores AS (
+    SELECT *,
+        -- NTILE(5) splits the data into 5 equal buckets (quintiles)
+        -- For Recency, a LOWER value is better, so we ORDER BY Recency DESC
+        NTILE(5) OVER (ORDER BY Recency DESC) AS R_Score,  -- Lower days = higher score
+        NTILE(5) OVER (ORDER BY Frequency ASC) AS F_Score, -- Higher count = higher score
+        NTILE(5) OVER (ORDER BY Monetary ASC) AS M_Score   -- Higher spend = higher score
+    FROM RFM_Base
+)
+SELECT * FROM RFM_Scores;
+
+--------------------------------------------------------------------------------------------------------------------
+
+
+-- Phase 4: Scoring Segmentation and Labeling (The Grading System)
+
+--          Now, we concatenate the scores and apply the business logic rules
+--          found in instructions to label the customers.
+
+-- 1. The "Grading Tool" (NTILE) & In Python, WE use pd.qcut(). 
+
+--    In SQL, we use NTILE(5).
+
+--    Imagine WE have 1,000 customers. 
+--    NTILE(5) does three things automatically :
+ 
+--    a). It sorts all 1,000 customers from best to worst.
+--    b). It splits them into 5 equal groups (200 people in each group).
+--    c). It assigns a number: The top group gets a 5, and the bottom group gets a 1.
+
+-- 2. The Scoring Logic (R, F, and M)
+--    We apply that grading tool to your three metrics, 
+--    but the "sorting" direction changes depending on the metric:
+
+--    R_Score (Recency):
+--                      Logic: A smaller number of days is better because it means they shopped recently.
+--                      SQL Command: ORDER BY Recency DESC.
+--                      Result: Someone who shopped 1 day ago gets a 5 (Recent), 
+--                              while someone who shopped 100 days ago gets a 1 (Stale).
+--    F_Score (Frequency):
+--                      Logic: A higher number of visits is better.
+--                      SQL Command: ORDER BY Frequency ASC.
+--                      Result: A customer with 50 visits gets a 5 (Frequent),
+--                              while someone with 1 visit gets a 1 (Rare).
+--    M_Score (Monetary):
+--                       Logic: A higher total spend is better.
+--                       SQL Command: ORDER BY Monetary ASC.
+--                       Result: A big spender gets a 5 (High), and a low spender gets a 1 (Low).
+
+-- 3. Creating the "RFM Cell" (CONCAT)
+
+--    Once we have the three individual grades (like R=5, F=2, M=1), 
+--    the query "glues" them together into a single string.
+
+--    The Query Command: CONCAT(R_Score, F_Score, M_Score).
+
+--    The Result: It turns the scores into a 3-digit code like "521".
+
+--    Why?: 
+--        It is much easier for a computer (and US!)
+--        to identify a "555" as a Champion than to look at three separate columns.
+
+--        Why is this Phase Important?
+
+--        Without Phase 4 we just have a list of dates and prices. 
+--        After that , every customer has a profile.
+--        "555" means: "They bought yesterday, they buy every week, and they spend a lot." 
+--        "111" means: "They bought once a year ago for a very small amount.
+
+SELECT 
+    CustomerID,
+    Recency, Frequency, Monetary,
+    CONCAT(R_Score, F_Score, M_Score) AS RFM_SCORE,
+    CASE 
+        WHEN R_Score >= 4 AND F_Score >= 4 AND M_Score >= 4 THEN 'Champions'
+        WHEN F_Score >= 4 AND R_Score >= 2 THEN 'Loyal Customers'
+        WHEN R_Score >= 4 AND F_Score BETWEEN 2 AND 3 THEN 'Potential Loyalists'
+        WHEN R_Score <= 2 AND F_Score >= 3 THEN 'At Risk'
+        WHEN R_Score = 1 AND F_Score <= 2 THEN 'Lost'
+        WHEN M_Score >= 4 AND F_Score BETWEEN 2 AND 3 THEN 'Big Spenders'
+        ELSE 'Others'
+    END AS Segment
+FROM (
+    -- Nest the RFM_Scores logic here
+    SELECT *,
+        NTILE(5) OVER (ORDER BY Recency DESC) AS R_Score,
+        NTILE(5) OVER (ORDER BY Frequency ASC) AS F_Score,
+        NTILE(5) OVER (ORDER BY Monetary ASC) AS M_Score
+    FROM (
+        SELECT CustomerID,
+               DATEDIFF((SELECT MAX(TransactionDate) + INTERVAL 1 DAY FROM Transactions), MAX(TransactionDate)) AS Recency,
+               COUNT(*) AS Frequency,
+               ROUND(SUM(TransactionAmount),2) AS Monetary
+        FROM Transactions
+        GROUP BY CustomerID
+    ) AS base
+) AS scored_data;
+
+
+
+
+
+--------------------------------------------------------------------------------------------
+
+
+-- Phase 5: Business Insights (Visualizing via SQL)
+--          To fulfill the visualization goals of the project, 
+--          we can run aggregation queries that provide the data for charts.
+
+--       1. Count of Customers per Segment
+
+--            TO SIMPLY UNDERSTAND THE QUERIES
+
+--            SELECT Segment, COUNT(*) as Customer_Count
+--            FROM (/* Insert the large query from Phase 4 here */) AS final_segments
+--            GROUP BY Segment
+--            ORDER BY Customer_Count DESC;
+
+-- Useful for a Bar Chart
+
+SELECT Segment, COUNT(*) as Customer_Count
+FROM (SELECT 
+    CustomerID,
+    Recency, Frequency, Monetary,
+    CONCAT(R_Score, F_Score, M_Score) AS RFM_Cell,
+    CASE 
+        WHEN R_Score >= 4 AND F_Score >= 4 AND M_Score >= 4 THEN 'Champions'
+        WHEN F_Score >= 4 AND R_Score >= 2 THEN 'Loyal Customers'
+        WHEN R_Score >= 4 AND F_Score BETWEEN 2 AND 3 THEN 'Potential Loyalists'
+        WHEN R_Score <= 2 AND F_Score >= 3 THEN 'At Risk'
+        WHEN R_Score = 1 AND F_Score <= 2 THEN 'Lost'
+        WHEN M_Score >= 4 AND F_Score BETWEEN 2 AND 3 THEN 'Big Spenders'
+        ELSE 'Others'
+    END AS Segment
+                  FROM (
+						-- Nest the RFM_Scores logic here
+						SELECT *,
+						NTILE(5) OVER (ORDER BY Recency DESC) AS R_Score,
+						NTILE(5) OVER (ORDER BY Frequency ASC) AS F_Score,
+						NTILE(5) OVER (ORDER BY Monetary ASC) AS M_Score
+						FROM (
+							   SELECT CustomerID,
+							   DATEDIFF((SELECT MAX(TransactionDate) + INTERVAL 1 DAY FROM Transactions),
+							   MAX(TransactionDate)) AS Recency,
+							   COUNT(*) AS Frequency,
+							   SUM(TransactionAmount) AS Monetary
+							   FROM Transactions
+                               GROUP BY CustomerID
+							) AS base
+                       ) AS scored_data
+     ) AS final_segments
+GROUP BY Segment
+ORDER BY Customer_Count DESC;
+
+
+
+
+----------------------------------------------------------------------------------------------------------------------
+--       2. Revenue Contribution per Segment
+
+--          Useful for a Pie Chart or Pareto Analysis
+
+--          TO SIMPLY UNDERSTAND THE QUERIE IN SHORT 
+
+--          SELECT Segment, SUM(Monetary) as Total_Revenue
+--          FROM (/* Insert the large query from Phase 4 here */) AS final_segments
+--          GROUP BY Segment
+--          ORDER BY Total_Revenue DESC;
+
+
+-- Useful for a Pie Chart or Pareto Analysis
+SELECT Segment, ROUND(SUM(Monetary),2) as Total_Revenue
+FROM (SELECT 
+    CustomerID,
+    Recency, Frequency, Monetary,
+    CONCAT(R_Score, F_Score, M_Score) AS RFM_SCORE,
+    CASE 
+        WHEN R_Score >= 4 AND F_Score >= 4 AND M_Score >= 4 THEN 'Champions'
+        WHEN F_Score >= 4 AND R_Score >= 2 THEN 'Loyal Customers'
+        WHEN R_Score >= 4 AND F_Score BETWEEN 2 AND 3 THEN 'Potential Loyalists'
+        WHEN R_Score <= 2 AND F_Score >= 3 THEN 'At Risk'
+        WHEN R_Score = 1 AND F_Score <= 2 THEN 'Lost'
+        WHEN M_Score >= 4 AND F_Score BETWEEN 2 AND 3 THEN 'Big Spenders'
+        ELSE 'Others'
+    END AS Segment
+                  FROM (
+						-- Nest the RFM_Scores logic here
+						SELECT *,
+						NTILE(5) OVER (ORDER BY Recency DESC) AS R_Score,
+						NTILE(5) OVER (ORDER BY Frequency ASC) AS F_Score,
+						NTILE(5) OVER (ORDER BY Monetary ASC) AS M_Score
+						FROM (
+							  SELECT CustomerID,
+							  DATEDIFF((SELECT MAX(TransactionDate) + INTERVAL 1 DAY FROM Transactions),
+							  MAX(TransactionDate)) AS Recency,
+							  COUNT(*) AS Frequency,
+							  SUM(TransactionAmount) AS Monetary
+							  FROM Transactions
+							  GROUP BY CustomerID
+							) AS base
+                       ) AS scored_data
+     ) AS final_segments
+GROUP BY Segment
+ORDER BY Total_Revenue DESC;

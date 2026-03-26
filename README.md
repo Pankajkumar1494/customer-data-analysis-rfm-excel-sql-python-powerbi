@@ -20,8 +20,6 @@ Python (Pandas & Seaborn): Conducted deep-dive statistical analysis and advanced
 
 Power BI: Developed an interactive executive dashboard to visualize customer distribution across geographies and income brackets, allowing stakeholders to filter insights in real-time.
 
-HTML/CSS: Built a custom presentation deck for a professional walkthrough of the project logic.
-
 🚀 Project Workflow
 
 1. Data Cleaning & Engineering (SQL & Excel)
